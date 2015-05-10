@@ -1,0 +1,68 @@
+TOP := $(shell pwd)
+STATIC=false
+
+# The command find src -false -or -name pattern1 -or -name pattern2
+# ..., where $(1) is the list of pattern that should be matched.
+find_command = find gits src libiconv -false $(1:%=-or -name '%')
+
+# The read command where $(1) is the the extensions that should be touched:
+#   while read i; do stem=${i%.*}; touch -c $stem.ext1 $stem.ext2 ... ; done
+read_command = \
+  while read i; do stem=$${i%.*}; $(call touch_command,$(1)); done
+
+# Report what we touch.
+touch_command = j="$(1:*%=$$stem%)"; echo touching if $$j exist ; touch -c $$j
+
+# Combine them: first arg is the list of patterns to match, second is
+# what to touch if file exists where * denotes the matched filename
+# without extension.
+pattern_touch = $(call find_command,$(1)) | $(call read_command,$(2))
+
+stmp-touch:
+	date
+	# po rules.
+	$(call find_command,*.po) -exec touch {} \;
+	$(call pattern_touch,*.po,*.gmo)
+
+clobber: clobber-zlib clobber-thunderx
+	rm -rf stmp-touch
+
+clobber-zlib:
+	rm -Rf build-zlib
+	rm -Rf libs
+
+clobber-thunderx:
+	rm -rf build-aarch64-thunderx-linux-gnu*
+	rm -rf build-*-aarch64-thunderx-linux-gnu*
+	rm -rf minimal-aarch64-thunderx-linux-gnu*
+	rm -rf build-aarch64-thunderx-elf*
+	rm -rf build-aarch64_be-thunderx-linux-gnu*
+	rm -rf build-*-aarch64_be-thunderx-linux-gnu*
+	rm -rf minimal-aarch64_be-thunderx-linux-gnu*
+	rm -rf thunderx-tools
+	rm -rf thunderx-tools-be
+
+thunderx-linux: stmp-touch
+	THUNDER_PKGVERSION="$(THUNDER_PKGVERSION)" RELEASE=$(RELEASE) VERBOSE=$(VERBOSE) STATIC=$(STATIC) $(TOP)/scripts/build-thunderx-linux
+
+thunderx_be-linux: stmp-touch 
+	THUNDER_PKGVERSION="$(THUNDER_PKGVERSION)" RELEASE=$(RELEASE) VERBOSE=$(VERBOSE) STATIC=$(STATIC) $(TOP)/scripts/build-thunderx-linux --big-endian
+
+thunderx-linux-native: stmp-touch
+	THUNDER_PKGVERSION="$(THUNDER_PKGVERSION)" RELEASE=$(RELEASE) VERBOSE=$(VERBOSE) STATIC=$(STATIC) $(TOP)/scripts/build-thunderx-native
+
+thunderx_be-linux-native: stmp-touch
+	THUNDER_PKGVERSION="$(THUNDER_PKGVERSION)" RELEASE=$(RELEASE) VERBOSE=$(VERBOSE) STATIC=$(STATIC) $(TOP)/scripts/build-thunderx-native --big-endian
+
+thunderx-elf: stmp-touch
+	THUNDER_PKGVERSION="$(THUNDER_PKGVERSION)" RELEASE=$(RELEASE) VERBOSE=$(VERBOSE) STATIC=$(STATIC) $(TOP)/scripts/build-thunderx-bare-metal
+
+thunderx-fedora: stmp-touch
+	scripts/build-thunderx-fedora
+
+thunderx: stmp-touch
+	${MAKE} thunderx-elf
+	${MAKE} thunderx-linux
+	${MAKE} thunderx-linux-native
+	${MAKE} thunderx_be-linux
+	${MAKE} thunderx_be-linux-native

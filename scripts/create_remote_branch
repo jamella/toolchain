@@ -1,0 +1,16 @@
+#!/bin/bash
+#Usage ./scripts/create_local_branch branch_name
+
+cbranch=`git branch|grep ^\*|awk '{print $2}'`
+
+git push origin ${cbranch}:${1}
+git checkout -b ${1} origin/${1}
+git_repos="gcc binutils gdb glibc newlib qemu"
+
+cd gits
+for x in ${git_repos}; do
+cd $x;
+  git push origin ${cbranch}:${1}
+  git checkout -b ${1} origin/${1}
+cd ../
+done

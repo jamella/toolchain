@@ -1,0 +1,1 @@
+../gits/gcc/ltgcc.m4

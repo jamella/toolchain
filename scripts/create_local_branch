@@ -1,0 +1,14 @@
+#!/bin/bash
+#Usage ./scripts/create_local_branch branch_name
+
+git branch ${1} || exit
+git checkout ${1}
+git_repos="gcc binutils gdb glibc newlib qemu"
+
+cd gits
+for x in ${git_repos}; do
+cd $x;
+  git branch ${1}
+  git checkout ${1}
+cd ../
+done

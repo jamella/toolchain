@@ -1,0 +1,32 @@
+#!/bin/bash
+
+set -e
+
+git_repos="gcc binutils gdb glibc newlib qemu"
+
+git pull
+cd gits
+for gr in ${git_repos}; do
+
+echo ${gr}
+cd ${gr}
+git pull
+
+#Update the upstream branch if it is checkouted
+if git branch | grep upstream > /dev/null ; then
+
+cbranch=`git branch|grep ^\*|awk '{print $2}'`
+git checkout upstream
+git pull
+git checkout $cbranch
+fi
+
+cd ../
+done
+
+cd ../
+
+#Update the SVN externals also.
+cd sdk-external
+cd executive
+svn up

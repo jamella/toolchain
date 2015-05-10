@@ -1,0 +1,14 @@
+#!/bin/bash
+#Usage ./scripts/checkout_branch branch_name
+
+git_repos="gcc binutils gdb glibc newlib qemu"
+
+cd gits
+for x in ${git_repos}; do
+cd $x;
+  git checkout -b ${1} origin/${1}
+cd ../
+done
+
+cd ..
+git checkout -b ${1} origin/${1}

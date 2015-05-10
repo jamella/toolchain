@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e
+
+git_repo=`git config --get remote.origin.url`
+git_repos="gcc binutils gdb glibc"
+branch=`git branch|grep ^\*|awk '{print $2}'`
+
+if test -d gits; then
+  echo WARNING DELETING gits directory
+  rm -Rf gits
+fi
+
+if [ "x$1" == "x--quick" ]; then
+  git_options="-b ${branch} --depth 1"
+  git_not_only_branch=false
+else
+  git_options=""
+  git_not_only_branch=true
+fi
+
+mkdir -p gits
+cd gits
+for gr in ${git_repos}; do
+
+fullpath=`echo $git_repo | sed "s/toolchain.git/${gr}.git/"`
+
+git clone $git_options $fullpath ${gr}
+
+#change over the branch if needed.
+
+if [ $branch != "master" ] && $git_not_only_branch ; then
+cd $gr
+git branch $branch origin/${branch}
+git checkout $branch
+cd ../
+fi
+
+done
+
+cd ../

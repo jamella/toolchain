@@ -1,0 +1,577 @@
+#!/bin/bash
+
+# As we uses pipes and we want the build to fail correctly due to the first program failing.
+set -o pipefail
+
+if [ "x${TOP}" == x ]; then
+  echo "TOP needs to be set in the previous script."
+  exit 1
+fi
+
+if [ "x${NUM_PARALLEL}" == "x" ]; then
+  NUM_PARALLEL=`cat /proc/cpuinfo | grep processor | wc -l`
+fi
+
+
+PMAKE="make -j ${NUM_PARALLEL}"
+
+# Even though this is supposed to be common between all builds of CGE7, this is here
+# because Octeon has a special toolchain.
+OCTEON_PREFIX=${TOP}/tools
+OCTEON_PREFIX_LE=${TOP}/tools-le
+THUNDER_PREFIX=${TOP}/thunderx-tools
+
+LINUX_LANGUAGES=c,c++,go,fortran
+BARE_LANGUAGES=c,c++
+
+if test -z "$OCTEON_PKGVERSION" ; then
+  OCTEON_PKGVERSION="Cavium Development Version"
+fi
+if test -z "$THUNDER_PKGVERSION" ; then
+  THUNDER_PKGVERSION="Cavium Development Version"
+fi
+if test -z "$MA_PKGVERSION"; then
+  MA_PKGVERSION="MontaVista Development version"
+fi
+
+OCTEON_BUGURL="http://www.cavium.com/support.html"
+THUNDER_BUGURL="http://www.cavium.com/support.html"
+MA_BUGURL="http://support.mvista.com/"
+
+TERMCAP_VERSION=1.3.1
+
+STATIC_NSS_LIBS=
+if find /usr/lib* -name libnss_files.a | grep libnss ; then
+  STATIC_NSS_LIBS = -lc -lnss_files -lnss_dns -lresolv
+fi
+
+# For release do not configure toolchain with "--enable-checking".
+if [ "x${RELEASE}" != xrelease ]; then
+ENABLE_CHECKING=--enable-checking
+fi
+
+# Set the common options that will be passed.
+# Right now Disable python support and PPL support
+# Also disable fixed point since Octeon does not support any of the fixed point instructions
+# Also disable Werror while doing the builds
+# libsanitizer is too broken to be included with the benchmarking branch.
+GCC_CONFIG_ARGS="--disable-fixed-point --without-ppl --without-python --disable-werror --enable-plugins --disable-libsanitizer  --with-lto-plugin-source=${TOP}/gits/gcc/lto-plugin"
+
+function progress()
+{
+  trap 'exit 0' TERM
+  echo -n "Building $1 for $2 ..."
+  while true
+  do
+    echo -n "."
+    sleep 5
+  done
+}
+
+function killsub() 
+{
+    kill -9 ${1} 2>/dev/null
+    wait ${1} 2>/dev/null
+}
+
+#Usage log_build subprocessname target
+#1: Sub Process name
+#2: target
+function log_build()
+{
+  local foopid
+  if [ "x${VERBOSE}" == "x1" ]; then
+    tee -a $1.log
+  else
+    progress "$2" "$1" &
+    foopid=$!
+    trap 'killsub ${foopid} >/dev/null 2>&1; exit 1' INT TERM EXIT
+    cat >> $1.log
+    status=$?
+    killsub $foopid >/dev/null 2>&1
+    if [ $status != 0 ]; then
+      echo -n "...error."
+    else
+      echo -n "...done."
+    fi
+    echo
+    trap - INT TERM EXIT
+    return $?
+  fi
+}
+
+#Usage log_build_native subprocessname target
+#1: Sub Process name
+#2: target
+function log_build_native()
+{
+  local foopid
+  if [ "x${VERBOSE}" == "x1" ]; then
+    tee -a ${1}-native.log
+  else
+    progress "$2" "$1" &
+    foopid=$!
+    trap 'killsub ${foopid} >/dev/null 2>&1; exit 1' INT TERM EXIT
+    cat >> ${1}-native.log
+    killsub $foopid >/dev/null 2>&1
+    echo -n "...done."
+    echo
+    trap - INT TERM EXIT
+  fi
+}
+
+#Arguments:
+#1: languages
+#2: libs directory (zlib and other libraries)
+#3: target
+#4: prefix
+#5: extra config options
+#6: bool if building statically
+#7: package version
+#8: bug URL
+function build_cross_full_gcc() {
+#local 
+local CONFIGURE_HOST
+local langauges
+local libs
+local target
+local prefix
+local extra_config
+local static
+local prevdir
+local bugurl
+local pkgversion
+
+CONFIGURE_HOST="maybe-configure-bfd maybe-configure-opcodes \
+	maybe-configure-binutils maybe-configure-gas maybe-configure-gprof \
+	maybe-configure-intl maybe-configure-ld"
+
+languages=$1
+libs=$2
+target=$3
+prefix=$4
+extra_config="${5}"
+static=$6
+pkgversion="$7"
+bugurl="$8"
+prevdir=$(pwd)
+build_dir=build-${target}
+
+mkdir -p $build_dir
+cd $build_dir
+CC="gcc -L${libs}/lib -I${libs}/include" \
+${TOP}/src/configure $GCC_CONFIG_ARGS $ENABLE_CHECKING $extra_config --target=${target} --enable-languages=${languages} --prefix=${prefix}  --with-pkgversion="$pkgversion"  --with-bugurl="$bugurl" --with-libexpat-prefix=${libs} || return 1
+
+$PMAKE $CONFIGURE_HOST || return 1
+
+if $static ; then
+  $PMAKE maybe-all-gprof all-gas all-binutils LDFLAGS=-all-static  || return 1
+  $PMAKE LDFLAGS="-all-static" CLIBS="${STATIC_NSS_LIBS} -Wl,-lc" all-ld  || return 1
+  $PMAKE configure-host || return 1
+  $PMAKE LDFLAGS="-static ${STATIC_NSS_LIBS}" all-gcc  || return 1
+  $PMAKE LDFLAGS=-static NAT_CLIBS="${STATIC_NSS_LIBS} -ldl" all-gdb || return 1
+fi
+
+$PMAKE all || return 1
+make install || return 1
+
+#Change some hard links into symbolic links.
+cd ${prefix}/${target}/bin
+bins=`ls`
+for bin in $bins; do
+  rm $bin
+  ln -s ../../bin/${target}-${bin} ${bin}
+done
+
+cd $prevdir
+return 0
+}
+
+#Arguments
+#1: the strip program
+#Rest: the dirs
+function strip_dirs()
+{
+  local strip_types
+  local dirs
+  local strip
+
+  strip=$1
+  shift
+
+  function strip_types()
+  {
+    xargs file | grep -v Bourne |grep -v POSIX | grep -v shell | grep -v libtool | grep -v perl | grep -v ASCII | cut -d: -f1
+  }
+  dirs="$@"
+  files=`find $dirs -type f -perm +111 | strip_types`
+  if [ -n "$files" ]; then
+    echo "$files" | xargs $strip
+  fi
+}
+
+#Arguments:
+#1: sysroot dir
+#2: target
+function build_sysroot()
+{
+  local sysroot
+  local target
+  local HEADER_DIR
+
+  sysroot=$1
+  target=$2
+
+  HEADER_DIR=${TOP}/linux-headers/include
+  # Convert the target triplet into a linux target.
+  case ${target} in
+  arm*) linux_target=arm ;;
+  powerpc*) linux_target=powerpc  ;;
+  i[34567]86-* | x86_64-*) linux_target=x86 ;;
+  mips*) linux_target=mips ;;
+  aarch64*)  linux_target=arm64 ;;
+  *) echo please update table in build-common for your target; exit 1 ;;
+  esac
+
+  mkdir -p ${sysroot}/usr
+  mkdir -p ${sysroot}/lib
+  mkdir -p ${sysroot}/usr/lib
+  rm -rf ${sysroot}/usr/include
+  cp -r ${HEADER_DIR} ${sysroot}/usr/include || return 1
+  mv ${sysroot}/usr/include/asm-${linux_target} ${sysroot}/usr/include/asm || return 1
+  mv ${sysroot}/usr/include/asm-generic ${sysroot}/usr/include/ag
+  rm -Rf ${sysroot}/usr/include/asm-*
+  mv ${sysroot}/usr/include/ag ${sysroot}/usr/include/asm-generic
+  return 0
+}
+
+#Arguments:
+#1: libs directory (zlib and other libraries)
+#2: target
+#3: extra config options
+function build_cross_linux_minimal_gcc() {
+local libs
+local target
+local extra_config
+local prevdir
+local HEADER_DIR
+
+libs=$1
+target=$2
+extra_config="${3}"
+prevdir=$(pwd)
+
+base_build_dir=${TOP}/build-${target}
+minimal_build_dir=${base_build_dir}-minimal
+minimal_prefix=${TOP}/minimal-${target}
+minimal_sysroot=${minimal_prefix}/${target}/sysroot
+
+#Create the minimal sysroot
+build_sysroot $minimal_sysroot $target || exit 1
+
+mkdir $minimal_build_dir
+cd $minimal_build_dir
+
+#build the minimal toolchain
+CC="gcc -L${libs}/lib -I${libs}/include" \
+${TOP}/src/configure $GCC_CONFIG_ARGS $ENABLE_CHECKING $extra_config --target=${target} --enable-languages=c --prefix=${minimal_prefix} --enable-threads=no --disable-shared --with-local-prefix=${minimal_sysroot} --with-sysroot=${minimal_sysroot} --with-newlib --enable-languages=c --enable-threads=no --disable-decimal-float  --disable-fixed-point  --with-libexpat-prefix=${libs} || return 1
+
+# Build gcc and binutils and libgcc only since that is all is needed for
+# compiling glibc.
+${PMAKE} all-gas all-binutils all-ld || return 1
+make install-gas install-ld install-binutils || return 1
+# glibc will provide ssp as it is new enough
+gcc_cv_libc_provides_ssp=yes  ${PMAKE} configure-gcc || return 1
+${PMAKE} all-gcc all-target-libgcc || return 1
+make install-gcc install-target-libgcc || return 1
+cd $prevdir
+
+}
+
+#Arguments:
+#1: target
+#2: options passed to glibc (for multilib or "" for default)
+#3: extra options to config
+#4: install root
+
+function build_cross_linux_glibc()
+{
+  local target
+  local temp
+  local compiler
+  local minimal_prefix
+  local options
+  local build_dir
+  local config_opts
+  local root
+
+  target=$1
+  options="$2"
+  config_opts=$3
+  root=$4
+
+  minimal_prefix=${TOP}/minimal-${target}
+  compiler=${minimal_prefix}/bin/${target}-gcc
+
+  temp=$($compiler $options -print-libgcc-file-name)
+  ln -sf $temp ${temp%.a}_eh.a
+
+
+  build_dir=`echo ${TOP}/build-glibc-${target}${options}|tr -d ' '|tr '=' '-'`
+
+  mkdir -p $build_dir
+
+  cd $build_dir
+# Add libc_cv_forced_unwind, libc_cv_c_cleanup to config.cache to
+# support NPTL per LinuxFromScratch.
+# likewise for libc_cv_ctors_header=yes
+  echo "libc_cv_forced_unwind=yes" > config.cache;
+  echo "libc_cv_c_cleanup=yes" >> config.cache;
+  echo "libc_cv_ctors_header=yes" >> config.cache
+
+
+# The embedded rootfs does not have bash use sh in the ldd script 
+# instead.
+  ${TOP}/glibc/configure --host=$target --prefix=/usr --enable-kernel=2.6.32 --disable-profile --disable-debug --without-gd --enable-shared --enable-static-nss --disable-werror --enable-obsolete-rpc --cache-file=config.cache $config_opts  --build=i386-linux CC="$compiler $options -O2" BASH_SHELL=/bin/sh || return 1
+
+  ${PMAKE} all || return 1
+
+  make install install_root=${root} || return 1
+
+}
+
+#Arguments:
+#1: languages
+#2: libs directory (zlib and other libraries)
+#3: target
+#4: prefix
+#5: sysroot
+#6: other config options
+#7: bool if building statically
+#8: package version
+#9: bug URL
+function build_cross_full_linux_gcc()
+{
+local langauges
+local libs
+local target
+local prefix
+local extra_config
+local static
+local prevdir
+local bugurl
+local pkgversion
+
+languages=$1
+libs=$2
+target=$3
+prefix=$4
+sysroot=$5
+extra_config=$6
+static=$7
+pkgversion="$8"
+bugurl="$9"
+
+other_options="--with-sysroot --with-local-prefix=${sysroot} --disable-sim --enable-symvers=gnu --enable-__cxa_atexit $extra_config"
+
+  build_cross_full_gcc $languages $libs ${target} $prefix "$other_options" $static "$pkgversion" "$bugurl" || return 1
+
+  return 0
+}
+
+
+#Arguments
+#1: target (optional)
+# If #1 is blank then the install dir is ${TOP}/libs
+#Otherwise it is ${TOP}/libs-(target)
+function build_zlib() {
+local target
+local prefix
+local build_dir
+local prev_dir
+
+target=$1
+prefix=${TOP}/libs
+build_dir=${TOP}/build-zlib
+if [ -n "${target}" ]; then
+  prefix=${prefix}-${target}
+  build_dir=${build_dir}-${target}
+fi
+
+prev_dir=`pwd`
+
+rm -rf ${build_dir}
+cp -r ${TOP}/zlib ${build_dir}
+
+cd ${build_dir}
+CHOST=${target} ./configure --static --prefix=${prefix} || return 1
+${PMAKE} all || return 1
+${PMAKE} install || return 1
+
+cd $prev_dir
+}
+
+#Arguments
+#1: target (optional)
+# If #1 is blank then the install dir is ${TOP}/libs
+#Otherwise it is ${TOP}/libs-(target)
+function build_libiconv() {
+local target
+local prefix
+local build_dir
+local prev_dir
+
+target=$1
+prefix=${TOP}/libs
+build_dir=${TOP}/build-libiconv
+if [ -n "${target}" ]; then
+  prefix=${prefix}-${target}
+  build_dir=${build_dir}-${target}
+fi
+
+prev_dir=`pwd`
+
+rm -rf ${build_dir}
+cp -r ${TOP}/libiconv ${build_dir}
+
+cd ${build_dir}
+
+#Touch aclocal.m4, configure, Makefile.in, *.h.in
+find . -name aclocal.m4 -exec touch {} \;
+find . -name Makefile.in -exec touch {} \;
+find . -name "*.h.in" -exec touch {} \;
+find . -name configure -exec touch {} \;
+
+./configure  --host=${target} --enable-static --disable-shared --with-pic --prefix=${prefix} || return 1
+${PMAKE} all || return 1
+${PMAKE} install || return 1
+
+#Remove the bogus libtool file.
+
+cd $prev_dir
+}
+
+#Arguments
+#1: target (optional)
+# If #1 is blank then the install dir is ${TOP}/libs
+#Otherwise it is ${TOP}/libs-(target)
+function build_expat() {
+local target
+local prefix
+local build_dir
+local prev_dir
+
+target=$1
+prefix=${TOP}/libs
+build_dir=${TOP}/build-expat
+if [ -n "${target}" ]; then
+  prefix=${prefix}-${target}
+  build_dir=${build_dir}-${target}
+fi
+
+prev_dir=`pwd`
+
+rm -rf ${build_dir}
+cp -r ${TOP}/expat ${build_dir}
+
+cd ${build_dir}
+./configure  --host=${target} --enable-static --disable-shared --with-pic --prefix=${prefix} || return 1
+${PMAKE} all || return 1
+${PMAKE} install || return 1
+
+#Remove the bogus libtool file.
+rm -Rf ${prefix}/lib/libexpat.la
+
+cd $prev_dir
+}
+
+#Arguments:
+#1: target
+# If #1 is blank then the install dir is ${TOP}/libs
+#Otherwise it is ${TOP}/libs-${target}
+function build_termcap() {
+local target
+local prefix
+local build_dir
+local prev_dir
+local version
+
+target=$1
+
+prev_dir=`pwd`
+
+prefix=${TOP}/libs
+build_dir=${TOP}/build-termcap
+if [ -n "${target}" ]; then
+  prefix=${prefix}-${target}
+  build_dir=${build_dir}-${target}
+fi
+
+rm -rf ${build_dir}
+rm -rf termcap-${TERMCAP_VERSION}
+tar -xzf ${TOP}/termcap-${TERMCAP_VERSION}.tar.gz
+mv termcap-${TERMCAP_VERSION} ${build_dir}
+cd ${build_dir}
+./configure --host=${target} --prefix=/usr --enable-shared || return 1
+make clean || return 1
+make CC=${target}-gcc AR=${target}-ar RANLIB=${target}-ranlib all || return 1
+
+mkdir -p ${prefix}/lib
+mkdir -p ${prefix}/include
+cp termcap.h ${prefix}/include
+cp libtermcap.a ${prefix}/lib
+
+
+
+cd $prev_dir
+}
+
+#Arguments:
+#1: languages
+#2: target
+#3: prefix
+#4: extra config options
+#5: package version
+#6: bug URL
+function build_native_gcc() {
+#local
+local CONFIGURE_HOST
+local langauges
+local libs 
+local target
+local prefix
+local extra_config
+local prevdir
+local pkgversion
+local bugurl
+
+
+languages=$1
+target=$2
+prefix=$3
+extra_config="${4}"
+pkgversion="$5"
+bugurl="$6"
+
+libs=${TOP}/libs-${target}
+
+SYSROOT=${prefix}/${target}/sys-root
+
+#Build zlib and termcap first for the target.
+build_zlib ${target} || return 1
+build_expat ${target} || return 1
+build_termcap ${target} || return 1
+
+prevdir=$(pwd)
+build_dir=build-${target}-native
+mkdir -p $build_dir
+cd $build_dir
+CC="$target-gcc -L${libs}/lib -I${libs}/include" \
+${TOP}/src/configure $GCC_CONFIG_ARGS $ENABLE_CHECKING $extra_config --target=${target} --host=${target} --enable-languages=${languages} --prefix=/usr --with-sysroot=/ --with-build-sysroot=${SYSROOT}   --with-pkgversion="$pkgversion"  --with-bugurl="$bugurl" --with-libexpat-prefix=${libs} || return 1
+
+$PMAKE all-host || return 1
+make install-host DESTDIR=${SYSROOT} || return 1
+
+cd $prevdir
+return 0
+}

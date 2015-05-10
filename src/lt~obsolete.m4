@@ -1,0 +1,1 @@
+../gits/gcc/lt~obsolete.m4

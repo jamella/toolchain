@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# Find the path to the script.
+TOP="$(dirname "$(readlink -f ${BASH_SOURCE[0]})")"/..
+
+# Load the common functions.
+source ${TOP}/scripts/build-common
+
+LINUX_CONFIG="--enable-symvers=gnu --enable-__cxa_atexit --disable-sim --with-multilib-list=lp64,ilp32 --with-cpu=thunderx"
+
+if [ "x${1}" != "x--big-endian" ] ; then
+  target=aarch64-thunderx-linux-gnu
+  prefix=${TOP}/thunderx-tools
+else
+  target=aarch64_be-thunderx-linux-gnu
+  prefix=${TOP}/thunderx-tools-be
+fi
+
+SYSROOT=${prefix}/${target}/sys-root
+LANGUAGES=$LINUX_LANGUAGES
+
+if [ "x${STATIC}" == "x" ] ; then
+ STATIC=true
+fi
+
+echo > ${target}.log
+
+build_zlib 2>&1 | log_build ${target} "zlib" || exit 1
+build_expat 2>&1 | log_build ${target} "expat" || exit 1
+build_libiconv 2>&1 | log_build ${target} "libiconv" || exit 1
+
+build_cross_linux_minimal_gcc ${TOP}/libs ${target} "$LINUX_CONFIG" 2>&1 | log_build ${target} "minimal toolchain" || exit 1
+
+glibc_options=""
+
+build_sysroot $SYSROOT $target || exit 1
+
+for abi in ilp32 lp64; do
+
+  build_cross_linux_glibc $target "-mabi=$abi" "$glibc_options" $SYSROOT 2>&1 | log_build ${target} "${abi} glibc" || exit 1
+
+  # Create usr/bin32, sbin32 and usr/sbin32 and usr/libexec32
+  if [ $abi == ilp32 ]; then
+    mv ${SYSROOT}/sbin ${SYSROOT}/sbin32
+    mv ${SYSROOT}/usr/bin ${SYSROOT}/usr/bin32
+    mv ${SYSROOT}/usr/sbin ${SYSROOT}/usr/sbin32
+    mv ${SYSROOT}/usr/libexec ${SYSROOT}/usr/libexec32
+  fi
+
+done
+
+#Link ld.so into lib64.
+if [ -e ${SYSROOT}/lib/ld-linux-aarch64.so.1 ]; then
+ ( cd ${SYSROOT}/lib64; rm -f ld-linux-aarch64.so.1; ln -s ../lib/ld-linux-aarch64.so.1 ld-linux-aarch64.so.1)
+fi
+
+#Link ld.so into libilp32.
+if [ -e ${SYSROOT}/lib/ld-linux-aarch64_ilp32.so.1 ]; then
+ ( cd ${SYSROOT}/libilp32; rm -f ld-linux-aarch64_ilp32.so.1; ln -s ../lib/ld-linux-aarch64_ilp32.so.1 ld-linux32-aarch64_ilp32.so.1)
+fi
+
+#Link ld.so into lib64.
+if [ -e ${SYSROOT}/lib/ld-linux-aarch64_be.so.1 ]; then
+ ( cd ${SYSROOT}/lib64; rm -f ld-linux-aarch64_be.so.1; ln -s ../lib/ld-linux-aarch64_be.so.1 ld-linux-aarch64_be.so.1)
+fi
+
+#Link ld.so into libilp32.
+if [ -e ${SYSROOT}/lib/ld-linux-aarch64_be_ilp32.so.1 ]; then
+ ( cd ${SYSROOT}/libilp32; rm -f ld-linux-aarch64_be_ilp32.so.1; ln -s ../lib/ld-linux-aarch64_be_ilp32.so.1 ld-linux-aarch64_be_ilp32.so.1)
+fi
+
+build_cross_full_linux_gcc $LANGUAGES ${TOP}/libs $target $prefix $SYSROOT "$LINUX_CONFIG" $STATIC "$THUNDER_PKGVERSION" "$THUNDER_BUGURL" 2>&1 | log_build ${target} "toolchain" || exit 1
+
+# Strip binaries.
+strip_dirs strip ${prefix}/bin ${prefix}/${target}/bin ${prefix}/libexec
+
+# Copy gcc target produced libraries into the sysroot so we can run the testsuite.
+for libdir in lib64 libilp32; do
+  mkdir -p ${SYSROOT}/${libdir}/
+  mkdir -p ${SYSROOT}/usr/${libdir}/
+  cp -R ${SYSROOT}/../${libdir}/*.so* ${SYSROOT}/${libdir}/
+  cp -R ${SYSROOT}/../${libdir}/*.a ${SYSROOT}/usr/${libdir}/
+  cp -R ${SYSROOT}/../${libdir}/*.spec ${SYSROOT}/usr/${libdir}/
+done
+
+#Create the correct links for the GCC shared libraries.
+for lib in lib64 libilp32 ;do
+  cd ${SYSROOT}/$lib
+  for x in *.so;do
+    if [ -h $x ]; then
+      link=`readlink $x`
+      if ! echo $link | grep -s -q '/'; then
+        cd ${SYSROOT}/usr/$lib
+          ln -s  ../../$lib/$link $x
+          rm ${SYSROOT}/$lib/$x
+        cd ${SYSROOT}/$lib
+      fi
+    fi
+  done
+done

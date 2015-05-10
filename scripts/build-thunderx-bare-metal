@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Find the path to the script.
+TOP="$(dirname "$(readlink -f ${BASH_SOURCE[0]})")"/..
+
+# Load the common functions.
+source ${TOP}/scripts/build-common
+
+EXEC_TARGET=aarch64-thunderx-elf
+
+EXEC_CONFIG_OPTS="--disable-sim --with-headers=${TOP}/src/newlib/libc/include --with-newlib --disable-tls --with-cpu=thunderx --with-multilib-list=lp64,ilp32"
+
+#Make this script rerunable
+if [ -d ${THUNDER_PREFIX}/${EXEC_TARGET}/sys-include ]; then
+  cp -r ${THUNDER_PREFIX}/${EXEC_TARGET}/{,sys-}include
+fi
+
+if [ "x${STATIC}" == "x" ]; then
+  STATIC=true
+fi
+
+build_dir=${TOP}/build-${EXEC_TARGET}
+
+
+PREFIX=$THUNDER_PREFIX
+
+echo > ${EXEC_TARGET}.log
+
+build_zlib 2>&1 | log_build ${EXEC_TARGET} "zlib" || exit 1
+build_expat 2>&1 | log_build ${EXEC_TARGET} "expat" || exit 1
+build_libiconv 2>&1 | log_build ${EXEC_TARGET} "libiconv" || exit 1
+
+
+build_cross_full_gcc $BARE_LANGUAGES ${TOP}/libs ${EXEC_TARGET} ${PREFIX} "${EXEC_CONFIG_OPTS}" $STATIC "$THUNDER_PKGVERSION" "$THUNDER_BUGURL" 2>&1 | log_build ${EXEC_TARGET} toolchain || exit 1
+
+# This is where --with-headers put the header files but after
+# installing newlib there is a same/better copy under include.
+rm -rf ${PREFIX}/${EXEC_TARGET}/sys-include
+make -C ${build_dir}/${EXEC_TARGET}/newlib info install-info 2>&1 | log_build ${EXEC_TARGET} installing-info || exit 1
+rm -f ${PREFIX}/bin/*-gccbug
+strip_dirs strip ${PREFIX}/bin ${PREFIX}/${EXEC_TARGET}/bin ${PREFIX}/libexec
+rm -rf ${PREFIX}/include/c++/*/${EXEC_TARGET}/bits/stdc++.h.gch
+rm -rf ${PREFIX}/bin/${EXEC_TARGET}-gdbtui
+
+exit 0

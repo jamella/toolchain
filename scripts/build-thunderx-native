@@ -1,0 +1,74 @@
+#!/bin/bash -e
+
+# Find the path to the script.
+TOP="$(dirname "$(readlink -f ${BASH_SOURCE[0]})")"/..
+
+# Load the common functions.
+source ${TOP}/scripts/build-common
+
+LINUX_CONFIG="--disable-sim --enable-symvers=gnu --enable-__cxa_atexit --with-multilib-list=lp64,ilp32 --with-cpu=thunderx"
+
+if [ "x${1}" != "x--big-endian" ] ; then
+  target=aarch64-thunderx-linux-gnu
+  prefix=${TOP}/thunderx-tools
+else
+  target=aarch64_be-thunderx-linux-gnu
+  prefix=${TOP}/thunderx-tools-be
+fi
+
+SYSROOT=${prefix}/${target}/sys-root
+
+NATIVE_BINARIES="ar as c++ g++ gcc ld nm objcopy objdump ranlib readelf strip"
+
+export PATH=${prefix}/bin:${PATH}
+
+${target}-gcc -v
+
+LIBPATH=usr/lib/gcc/${target}/`${target}-gcc -dumpversion`/
+LIBDIR=${SYSROOT}/${LIBPATH}
+
+echo > ${target}-native.log
+
+build_native_gcc $LINUX_LANGUAGES ${target} ${prefix} "$LINUX_CONFIG" "$THUNDER_PKGVERSION" "$THUNDER_BUGURL" 2>&1 | log_build_native ${target} "native toolchain" || exit 1
+
+# Copy binutils shared and static libraries.
+strip_dirs ${target}-strip ${SYSROOT}/usr/lib64;
+strip_dirs ${target}-strip ${SYSROOT}/usr/libilp32;
+(cd ${SYSROOT}/usr/bin; ln -sf gcc cc)
+# Strip the Linux native binaries.
+strip_dirs ${target}-strip ${SYSROOT}/usr/lib*/gconv ${SYSROOT}/usr/bin ${SYSROOT}/sbin ${SYSROOT}/usr/sbin
+
+cp ${SYSROOT}/usr/lib64/*crt?.o ${LIBDIR}
+mkdir -p ${LIBDIR}/ilp32
+cp ${SYSROOT}/usr/libilp32/*crt?.o ${LIBDIR}/ilp32
+# Copy C++ headers into the sys-root
+cp -R ${SYSROOT}/../include/c++ ${SYSROOT}/usr/include/
+# Copy the GCC target headers from the non native install
+cp -R ${SYSROOT}/../../lib/gcc/${target}/`${target}-gcc -dumpversion`/* ${LIBDIR}
+# Copy libgomp info
+mkdir -p ${SYSROOT}/usr/share/info
+cp -R ${prefix}/share/info/libgomp.info ${SYSROOT}/usr/share/info
+# Strip libraries.
+for dir in libilp32 lib64; do
+  strip_dirs ${target}-strip ${SYSROOT}/usr/${dir}
+  rm -f `find ${SYSROOT}/usr/${dir} -name "*.la"`
+done
+# Debian already has /usr/include directory and our toolchain
+# cannot link SYSROOT/usr/include to /usr/include, like other
+# libraries.  This is another search path the compiler looks at for
+# header files.
+(cd ${SYSROOT}/usr/${target}; ln -sf ../include include)
+# Add target prefix to all the Linux native binaries so that
+# same makefile can be used when using Linux cross and native
+# toolchain for building the application.
+cd ${SYSROOT}/usr/bin
+for i in ${NATIVE_BINARIES}; do 
+  rm -f ${target}-$i
+  ln -sf $i ${target}-$i
+done
+
+# Link the LTO plugin so bfd/ld can find it without any trouble
+cd ${SYSROOT}
+mkdir -p usr/lib/bfd-plugins
+cd usr/lib/bfd-plugins
+ln -s ../../libexec/gcc/${target}/`${target}-gcc -dumpversion`/liblto_plugin.so liblto_plugin.so
