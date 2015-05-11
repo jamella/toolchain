@@ -32,6 +32,12 @@ stmp-touch:
 	$(call pattern_touch,*h.in,*)
 	$(call pattern_touch,acinclude.m4,aclocal.m4)
 	$(call pattern_touch,configure.ac configure.in,*)
+	$(call pattern_touch,*.y,*.c *.h)
+	$(call pattern_touch,Makefile.am,*.in)
+	$(call pattern_touch,Makefile.in,*)
+	$(call pattern_touch,*h.in,*)
+	$(call pattern_touch,acinclude.m4,aclocal.m4)
+	$(call pattern_touch,configure.ac configure.in,*)
 	# po rules.
 	$(call find_command,*.po) -exec touch {} \;
 	$(call pattern_touch,*.po,*.gmo)
