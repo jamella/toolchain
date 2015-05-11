@@ -41,6 +41,11 @@ stmp-touch:
 	# po rules.
 	$(call find_command,*.po) -exec touch {} \;
 	$(call pattern_touch,*.po,*.gmo)
+	# all flex generated files
+	$(call find_command,*.l) -exec touch {} \;
+	$(call pattern_touch,*.l,*.c)
+	date
+	touch $@
 
 clobber: clobber-zlib clobber-thunderx
 	rm -rf stmp-touch
