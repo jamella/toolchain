@@ -20,6 +20,18 @@ pattern_touch = $(call find_command,$(1)) | $(call read_command,$(2))
 
 stmp-touch:
 	date
+	$(call find_command,*.m4) -exec touch {} \;
+	$(call find_command,*.y) -exec touch {} \;
+	$(call find_command,Makefile.am) -exec touch {} \;
+	$(call find_command,Makefile.in) -exec touch {} \;
+	$(call find_command,*h.in) -exec touch {} \;
+	$(call find_command,configure.ac configure.in) -exec touch {} \;
+	$(call pattern_touch,*.y,*.c *.h)
+	$(call pattern_touch,Makefile.am,*.in)
+	$(call pattern_touch,Makefile.in,*)
+	$(call pattern_touch,*h.in,*)
+	$(call pattern_touch,acinclude.m4,aclocal.m4)
+	$(call pattern_touch,configure.ac configure.in,*)
 	# po rules.
 	$(call find_command,*.po) -exec touch {} \;
 	$(call pattern_touch,*.po,*.gmo)
