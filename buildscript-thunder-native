@@ -1,0 +1,40 @@
+#!/bin/bash -e
+
+if [ "x${INSTALL_DIR}" == "x" ] ; then
+  INSTALL_DIR=${HOME}/gcc5-native
+fi
+
+rm -Rf ${INSTALL_DIR}
+
+machine=`uname -m`
+OBJDIR=objdir-${machine}
+
+cd gits
+
+cd binutils
+rm -Rf ${OBJDIR}
+mkdir ${OBJDIR}
+cd ${OBJDIR}
+../configure --disable-libsanitizer --prefix=${INSTALL_DIR} --with-cpu=thunderx --enable-languages=c,c++,fortran --disable-werror
+make -j48
+make install
+cd ../../
+
+cd gcc 
+rm -Rf ${OBJDIR}
+mkdir ${OBJDIR}
+cd ${OBJDIR}
+../configure --disable-libsanitizer --prefix=${INSTALL_DIR} --with-cpu=thunderx --enable-languages=c,c++,fortran --disable-werror
+make -j48
+make install
+
+# make -j48 -k check && ../gcc/contrib/test_summary -t -m apinski@cavium.com|sh
+
+cd ../../
+
+cd $INSTALL_DIR
+mkdir lib/bfd-plugins
+cd lib/bfd-plugins
+target=`${INSTALL_DIR}/bin/gcc -dumpmachine`
+version=`${INSTALL_DIR}/bin/gcc -dumpversion`
+ln -s ../../libexec/gcc/${target}/${version}/liblto_plugin.so liblto_plugin.so

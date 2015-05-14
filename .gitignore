@@ -1,0 +1,12 @@
+/gits
+/build-*
+/tools
+/tools-le
+/libs
+/x86_64-tools
+/minimal-*
+/sdk
+/sdk-external
+/stmp-touch
+/*.log
+*.swp

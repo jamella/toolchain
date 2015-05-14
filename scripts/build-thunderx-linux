@@ -27,7 +27,8 @@ echo > ${target}.log
 
 build_zlib 2>&1 | log_build ${target} "zlib" || exit 1
 build_expat 2>&1 | log_build ${target} "expat" || exit 1
-build_libiconv 2>&1 | log_build ${target} "libiconv" || exit 1
+#build_libiconv 2>&1 | log_build ${target} "libiconv" || exit 1
+echo "Skipping build of libiconv" #| log_build ${target} "libiconv"
 
 build_cross_linux_minimal_gcc ${TOP}/libs ${target} "$LINUX_CONFIG" 2>&1 | log_build ${target} "minimal toolchain" || exit 1
 
